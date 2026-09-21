@@ -40,6 +40,15 @@
     background:rgba(255,255,255,.18);border:0;color:#fff;
     padding:3px 10px;border-radius:999px;font-size:12.5px;font-weight:600;
   }
+  .kidbar{display:flex;gap:6px;margin-top:10px;overflow-x:auto;padding-bottom:2px}
+  .kidbar::-webkit-scrollbar{display:none}
+  .kidbar button{
+    flex:0 0 auto;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.25);
+    color:#fff;padding:6px 12px;border-radius:999px;font-size:13px;font-weight:600;opacity:.8;white-space:nowrap
+  }
+  .kidbar button[aria-pressed="true"]{background:#fff;color:var(--brand);border-color:#fff;opacity:1}
+  .kidbar button.addkid{font-weight:700;padding:6px 11px}
+
   nav{display:flex;gap:6px;margin-top:10px}
   nav button{
     flex:1;background:rgba(255,255,255,.14);border:0;color:#fff;
@@ -243,6 +252,7 @@
     <h1>HELP Tracker</h1>
     <button class="agechip" id="agechip" type="button">Set age</button>
   </div>
+  <div class="kidbar" id="kidbar"></div>
   <nav>
     <button type="button" data-tab="focus" aria-current="true">Focus</button>
     <button type="button" data-tab="skills">Skills</button>
@@ -1025,22 +1035,76 @@ const STATUSES = [
 
 /* ---------------- storage (this device only) ---------------- */
 const KEY = "help-tracker-v1";
-let db = {child:{name:"", birthdate:"", ageMonths:null}, rec:{}, fix:{}};
+
+/* Several children, each with their own marks. db.child and db.rec are live
+   references into whichever one is selected, so every screen keeps reading
+   them exactly as it did when there was only one. */
+let db = {kids:[], current:0, fix:{}};
+
+function blankKid(name){
+  return {id:"k" + Date.now().toString(36) + Math.random().toString(36).slice(2,6),
+          child:{name:name || "", birthdate:"", ageMonths:null}, rec:{}};
+}
+
+function currentKid(){
+  if(!db.kids.length) db.kids.push(blankKid(""));
+  db.current = Math.max(0, Math.min(db.current, db.kids.length - 1));
+  return db.kids[db.current];
+}
+
+/* db.child and db.rec are views onto whichever child is selected. Accessors
+   rather than copied references, so that assigning to either one writes
+   through to that child instead of quietly detaching from them. */
+Object.defineProperties(db, {
+  child: {
+    get(){ return currentKid().child; },
+    set(v){ currentKid().child = v; },
+    enumerable:false, configurable:true
+  },
+  rec: {
+    get(){ return currentKid().rec; },
+    set(v){ currentKid().rec = v; },
+    enumerable:false, configurable:true
+  }
+});
+
+function useKid(i){
+  db.current = i;
+  currentKid();
+}
+function kidLabel(k, i){
+  return (k.child.name || "").trim() || ("Child " + (i + 1));
+}
 
 function load(){
   try{
     const raw = localStorage.getItem(KEY);
     if(raw){
       const p = JSON.parse(raw);
-      db = {child:Object.assign({name:"",birthdate:"",ageMonths:null}, p.child||{}), rec:p.rec||{}, fix:p.fix||{}};
+      if(Array.isArray(p.kids) && p.kids.length){
+        db.kids = p.kids.map(k => ({
+          id: k.id || blankKid("").id,
+          child: Object.assign({name:"",birthdate:"",ageMonths:null}, k.child||{}),
+          rec: k.rec || {}
+        }));
+        db.current = typeof p.current === "number" ? p.current : 0;
+      }else{
+        /* the single-child shape this app started with */
+        db.kids = [{id: blankKid("").id,
+                    child: Object.assign({name:"",birthdate:"",ageMonths:null}, p.child||{}),
+                    rec: p.rec || {}}];
+        db.current = 0;
+      }
+      db.fix = p.fix || {};
     }
   }catch(e){ /* private mode / blocked storage: run with empty data */ }
+  useKid(db.current);
 }
 let storageBroken = false;
 
 function save(){
   try{
-    localStorage.setItem(KEY, JSON.stringify(db));
+    localStorage.setItem(KEY, JSON.stringify({kids:db.kids, current:db.current, fix:db.fix}));
     storageBroken = false;
   }catch(e){
     /* quota, private browsing, or a browser refusing storage on this page */
@@ -1339,7 +1403,7 @@ function renderFocus(){
 }
 
 /* ---------------- view: Skills ---------------- */
-let fArea = 0, fStatus = "all", fQuery = "", fGroup = true;
+let fArea = 0, fStatus = "all", fQuery = "", fGroup = true, fOrder = "age";
 let collapsed = {};      // band -> true when folded shut
 let lastBulk = null;     // one-step undo for the most recent bulk mark
 
@@ -1353,6 +1417,18 @@ function ageBand(it){
 }
 function bandLabel(b){
   return b >= 33 ? "33 months and up" : b + "\u2013" + (b + 3) + " months";
+}
+
+/* Working the way the HELP Charts read: start at the band she is in now and
+   walk back down the sequence, which is what you do when she does not have
+   something. Bands she has not reached yet go last, out of the way. */
+function orderBands(keys, m){
+  const nums = keys.map(Number);
+  if(fOrder !== "age" || m == null) return nums.sort((a, b) => a - b);
+  const cur = Math.min(33, Math.floor(m / 3) * 3);
+  const backFromHer = nums.filter(b => b <= cur).sort((a, b) => b - a);
+  const notYetThere = nums.filter(b => b > cur).sort((a, b) => a - b);
+  return backFromHer.concat(notYetThere);
 }
 
 function renderSkills(){
@@ -1389,7 +1465,10 @@ function renderSkills(){
       const b = ageBand(it);
       (bands[b] = bands[b] || []).push(it);
     }
-    body = Object.keys(bands).map(Number).sort((a, b) => a - b).map(b => {
+    const ordered = orderBands(Object.keys(bands), m);
+    const cur = (m == null) ? null : Math.min(33, Math.floor(m / 3) * 3);
+    let aheadMarked = false;
+    body = ordered.map(b => {
       const rows = bands[b];
       const done = rows.filter(it => ((db.rec[it.id] || {}).status || "") === "mastered").length;
       const blank = rows.filter(it => !((db.rec[it.id] || {}).status || "")).length;
@@ -1413,7 +1492,12 @@ function renderSkills(){
           '</div>' +
         '</div>';
       }
-      return '<section class="band' + (shut ? " collapsed" : "") + '">' +
+      let lead = "";
+      if(fOrder === "age" && cur != null && b > cur && !aheadMarked){
+        aheadMarked = true;
+        lead = '<div class="sectionlabel">Ahead of her age</div>';
+      }
+      return lead + '<section class="band' + (shut ? " collapsed" : "") + '">' +
         '<div class="band-head">' +
           '<button type="button" class="band-toggle" data-band-toggle="' + b + '" aria-label="Show or hide this band">' + (shut ? "\u25b8" : "\u25be") + '</button>' +
           '<span class="band-title"><b>' + bandLabel(b) + '</b>' +
@@ -1433,6 +1517,12 @@ function renderSkills(){
         '<button type="button" class="chip" data-group="1" aria-pressed="' + fGroup + '">Grouped by age</button>' +
         '<button type="button" class="chip" data-group="0" aria-pressed="' + !fGroup + '">One long list</button>' +
       '</div>' +
+      (fGroup && m != null
+        ? '<div class="filters">' +
+            '<button type="button" class="chip" data-order="age" aria-pressed="' + (fOrder === "age") + '">From her age, back</button>' +
+            '<button type="button" class="chip" data-order="young" aria-pressed="' + (fOrder === "young") + '">Youngest first</button>' +
+          '</div>'
+        : '') +
       '<input type="text" id="q" placeholder="Search skills or item number" value="' + esc(fQuery) + '" />' +
       '<p class="sub" style="margin:8px 0 0">' + list.length + ' of ' + ITEMS.length + ' skills' +
         (fGroup ? ' \u00b7 Each band has sweep buttons at the bottom, after the skills.' : '') +
@@ -1608,17 +1698,22 @@ function renderSetup(){
   const el = document.getElementById("view-setup");
   el.innerHTML =
     '<div class="card">' +
-      '<h2>Her details</h2>' +
-      '<p class="sub">Stored in this browser, on this device. Never sent anywhere.</p>' +
+      '<h2>This child</h2>' +
+      '<p class="sub">Child ' + (db.current + 1) + ' of ' + db.kids.length +
+        '. Switch with the chips at the top. Stored in this browser, on this device, never sent anywhere.</p>' +
       '<label class="field"><span>Name or nickname (optional)</span><input type="text" id="c-name" value="' + esc(db.child.name || "") + '" placeholder="Shown at the top of Focus" /></label>' +
       '<label class="field"><span>Birthdate &mdash; age updates itself</span><input type="date" id="c-bd" value="' + esc(db.child.birthdate || "") + '" /></label>' +
       '<label class="field"><span>Or just age in months</span><input type="number" id="c-am" min="0" max="60" step="1" value="' + esc(db.child.ageMonths == null ? "" : db.child.ageMonths) + '" placeholder="e.g. 28" /></label>' +
       '<p class="small muted" style="margin-top:8px">Birthdate wins if you fill in both. Age in months is the option if you’d rather not store a date of birth.</p>' +
+      '<button type="button" class="btn ghost wide" data-addkid style="margin-top:12px">Add another child</button>' +
+      (db.kids.length > 1
+        ? '<button type="button" class="btn ghost wide" id="delkid">Remove ' + esc(kidLabel(db.kids[db.current], db.current)) + '</button>'
+        : '') +
     '</div>' +
 
     '<div class="card">' +
       '<h2>Backup</h2>' +
-      '<p class="sub">Your marks live only in this browser. Clearing site data or deleting the app loses them &mdash; so copy a backup into Notes now and again. It is plain text: readable on its own, and this app can read it back.</p>' +
+      '<p class="sub">Every child in one note. Your marks live only in this browser, so copy this into Notes now and again. Pasting one back <b>adds and updates</b> &mdash; it never removes a child you already have.</p>' +
       '<button type="button" class="btn wide" id="copy">Copy backup for Notes</button>' +
       '<button type="button" class="btn ghost wide" id="export">Save it as a text file</button>' +
       '<details class="foot"><summary>Preview what gets copied</summary><div><pre id="preview" style="white-space:pre-wrap;word-break:break-word;font-size:12px;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:10px;margin:8px 0 0;overflow-x:auto"></pre></div></details>' +
@@ -1678,49 +1773,59 @@ function renderSetup(){
 /* ---------------- backup as readable text ----------------
    Plain text so it can live in a notes app and still be read by a human,
    but strict enough on the "id | status | date | skill" lines that the app
-   can read it back. Only skills you have actually touched are written out. */
+   can read it back. Every child goes in. Pasting one back MERGES - it adds
+   children it does not have and updates the ones it does, and never removes
+   anything. */
 
 const STATUS_LABEL = {notyet:"Not yet", emerging:"Emerging", mastered:"Mastered", assess:"To assess"};
 const LABEL_STATUS = {"not yet":"notyet", "emerging":"emerging", "mastered":"mastered", "to assess":"assess"};
 
-function backupText(){
-  const lines = [];
-  lines.push("HELP TRACKER BACKUP");
-  if(db.child.name) lines.push("Child: " + db.child.name);
-  if(db.child.birthdate) lines.push("Birthdate: " + db.child.birthdate);
-  const m = ageMonths();
-  if(m != null) lines.push("Age at save: " + Math.floor(m) + " months");
-  lines.push("Saved: " + today());
-  lines.push("");
-  lines.push("To restore: copy this whole note and paste it into Setup > Restore.");
-
+function kidBlock(kid, lines){
   let count = 0;
   for(const areaKey of Object.keys(AREAS)){
     const rows = ITEMS.filter(it => {
       if(it.a != areaKey) return false;
-      const r = db.rec[it.id];
-      return r && (r.status || (r.notes || "").trim() || (r.ideas || []).length || (r.plan || "").trim() || (r.activity || "").trim());
+      const r = kid.rec[it.id];
+      return r && (r.status || (r.notes || "").trim() || (r.ideas || []).length ||
+                   (r.plan || "").trim() || (r.activity || "").trim());
     });
     if(!rows.length) continue;
     lines.push("");
     lines.push("--- " + AREAS[areaKey].toUpperCase() + " ---");
     lines.push("");
     for(const it of rows){
-      const r = db.rec[it.id];
+      const r = kid.rec[it.id];
       count++;
       lines.push(it.id + " | " + (STATUS_LABEL[r.status] || "Unmarked") + " | " + (r.date || "") + " | " + it.s);
+      const fold = t => String(t).replace(/\s*\n+\s*/g, " / ");
       const act = (r.activity || "").trim();
-      if(act) lines.push("  Activity: " + act.replace(/\s*\n+\s*/g, " / "));
+      if(act) lines.push("  Activity: " + fold(act));
       const plan = (r.plan || "").trim();
-      if(plan) lines.push("  Plan: " + plan.replace(/\s*\n+\s*/g, " / "));
+      if(plan) lines.push("  Plan: " + fold(plan));
       const note = (r.notes || "").trim();
-      /* notes are folded onto one line so a stray newline can't break parsing */
-      if(note) lines.push("  Note: " + note.replace(/\s*\n+\s*/g, " / "));
-      for(const idea of (r.ideas || [])){
-        lines.push("  Idea: " + String(idea).replace(/\s*\n+\s*/g, " / "));
-      }
+      if(note) lines.push("  Note: " + fold(note));
+      for(const idea of (r.ideas || [])) lines.push("  Idea: " + fold(idea));
     }
   }
+  return count;
+}
+
+function backupText(){
+  const lines = ["HELP TRACKER BACKUP", "Saved: " + today()];
+  lines.push(db.kids.length + (db.kids.length === 1 ? " child" : " children"));
+  lines.push("");
+  lines.push("To restore: copy this whole note and paste it into Setup > Restore.");
+  lines.push("Pasting adds and updates. It never deletes a child you already have.");
+
+  let total = 0;
+  db.kids.forEach((kid, i) => {
+    lines.push("");
+    lines.push("=== CHILD: " + kidLabel(kid, i) + " ===");
+    if(kid.child.birthdate) lines.push("Birthdate: " + kid.child.birthdate);
+    if(kid.child.ageMonths != null && kid.child.ageMonths !== "") lines.push("Age at save: " + kid.child.ageMonths + " months");
+    total += kidBlock(kid, lines);
+  });
+
   const fixes = correctionLines();
   if(fixes.length){
     lines.push("");
@@ -1730,7 +1835,8 @@ function backupText(){
   }
 
   lines.push("");
-  lines.push("END OF BACKUP (" + count + (count === 1 ? " skill)" : " skills)"));
+  lines.push("END OF BACKUP (" + db.kids.length + (db.kids.length === 1 ? " child, " : " children, ") +
+             total + (total === 1 ? " skill)" : " skills)"));
   return lines.join("\n");
 }
 
@@ -1779,37 +1885,59 @@ function parseCorrections(raw){
   return fix;
 }
 
-/* Reads back either the text above or the older JSON shape. */
+/* Understands the multi-child format, the older single-child one, and the
+   original JSON. Returns {kids:[{child,rec}], fix} or null. */
 function parseBackup(raw){
   const txt = String(raw || "").trim();
   if(!txt) return null;
 
   if(txt.charAt(0) === "{"){
     const p = JSON.parse(txt);
-    if(!p || !p.rec) return null;
-    return {child:Object.assign({name:"",birthdate:"",ageMonths:null}, p.child||{}), rec:p.rec, fix:p.fix||{}};
+    if(!p) return null;
+    if(Array.isArray(p.kids) && p.kids.length){
+      return {kids: p.kids.map(k => ({
+                child: Object.assign({name:"",birthdate:"",ageMonths:null}, k.child||{}),
+                rec: k.rec || {}})),
+              fix: p.fix || {}};
+    }
+    if(!p.rec) return null;
+    return {kids:[{child:Object.assign({name:"",birthdate:"",ageMonths:null}, p.child||{}), rec:p.rec}],
+            fix: p.fix || {}};
   }
 
   if(!/HELP TRACKER BACKUP/i.test(txt)) return null;
 
-  const out = {child:{name:"", birthdate:"", ageMonths:null}, rec:{}, fix:parseCorrections(txt)};
-  const valid = new Set(ITEMS.map(i => i.id));
-  let current = null;
+  const valid = new Set(BASE_ITEMS.map(i => i.id));
+  const kids = [];
+  let kid = null, current = null;
+
+  const newKid = name => {
+    kid = {child:{name:name || "", birthdate:"", ageMonths:null}, rec:{}};
+    kids.push(kid);
+    current = null;
+  };
 
   for(const rawLine of txt.split(/\r?\n/)){
     const line = rawLine.trim();
 
-    let m = line.match(/^Child:\s*(.*)$/i);
-    if(m){ out.child.name = m[1].trim(); continue; }
+    let m = line.match(/^===\s*CHILD:\s*(.*?)\s*===$/i);
+    if(m){ newKid(m[1]); continue; }
+
+    /* the single-child format this app used first */
+    m = line.match(/^Child:\s*(.*)$/i);
+    if(m){ if(!kid) newKid(m[1].trim()); else kid.child.name = m[1].trim(); continue; }
+
     m = line.match(/^Birthdate:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})\s*$/i);
-    if(m){ out.child.birthdate = m[1]; continue; }
+    if(m){ if(!kid) newKid(""); kid.child.birthdate = m[1]; continue; }
     m = line.match(/^Age at save:\s*(\d+)/i);
-    if(m){ out.child.ageMonths = Number(m[1]); continue; }
+    if(m){ if(!kid) newKid(""); kid.child.ageMonths = Number(m[1]); continue; }
 
     m = line.match(/^(\d+\.\d+)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|/);
     if(m && valid.has(m[1])){
-      current = {status: LABEL_STATUS[m[2].toLowerCase()] || "", date: m[3].trim(), notes:"", ideas:[], plan:"", activity:""};
-      out.rec[m[1]] = current;
+      if(!kid) newKid("");
+      current = {status: LABEL_STATUS[m[2].toLowerCase()] || "", date: m[3].trim(),
+                 notes:"", ideas:[], plan:"", activity:""};
+      kid.rec[m[1]] = current;
       continue;
     }
 
@@ -1823,8 +1951,58 @@ function parseBackup(raw){
     if(m && current && m[1].trim()){ current.ideas.push(m[1].trim()); continue; }
   }
 
-  return Object.keys(out.rec).length || Object.keys(out.fix).length || out.child.name || out.child.birthdate || out.child.ageMonths != null
-    ? out : null;
+  const fix = parseCorrections(txt);
+  const anyKid = kids.some(k => Object.keys(k.rec).length || k.child.name || k.child.birthdate || k.child.ageMonths != null);
+  return (anyKid || Object.keys(fix).length) ? {kids: kids, fix: fix} : null;
+}
+
+/* Adds what is missing and updates what matches, by name. Nothing is removed,
+   so pasting the wrong note cannot cost you a child. */
+function untouchedKid(k){
+  return !(k.child.name || "").trim() && !k.child.birthdate &&
+         (k.child.ageMonths == null || k.child.ageMonths === "") &&
+         !Object.keys(k.rec).length;
+}
+
+function mergeBackup(parsed){
+  let added = 0, updated = 0, skills = 0;
+  let landOn = null;
+  for(const inc of parsed.kids){
+    const name = (inc.child.name || "").trim().toLowerCase();
+    let target = db.kids.find(k => (k.child.name || "").trim().toLowerCase() === name);
+    if(!target){
+      target = blankKid(inc.child.name || "");
+      db.kids.push(target);
+      added++;
+    }else{
+      updated++;
+    }
+    if(!landOn) landOn = target;
+    if(inc.child.birthdate) target.child.birthdate = inc.child.birthdate;
+    if(inc.child.ageMonths != null) target.child.ageMonths = inc.child.ageMonths;
+    if(inc.child.name) target.child.name = inc.child.name;
+    for(const id of Object.keys(inc.rec)){
+      target.rec[id] = inc.rec[id];
+      skills++;
+    }
+  }
+  db.fix = db.fix || {};
+  let fixes = 0;
+  for(const id of Object.keys(parsed.fix || {})){
+    db.fix[id] = Object.assign(db.fix[id] || {}, parsed.fix[id]);
+    fixes++;
+  }
+  /* a fresh install has one empty child sitting there; once real ones arrive
+     it is just clutter, so drop it - but only if it was never touched */
+  if(db.kids.length > 1){
+    db.kids = db.kids.filter(k => k === landOn || !untouchedKid(k));
+    if(!db.kids.length) db.kids.push(blankKid(""));
+  }
+
+  /* land on what was just brought in, not on whatever was selected before */
+  const idx = landOn ? db.kids.indexOf(landOn) : db.current;
+  useKid(idx === -1 ? 0 : idx);
+  return {added: added, updated: updated, skills: skills, fixes: fixes};
 }
 
 /* navigator.clipboard needs a secure context, which a page opened straight
@@ -1857,7 +2035,18 @@ function copyText(btn, txt, label){
 
 /* ---------------- routing ---------------- */
 let tab = "focus";
+function renderKidBar(){
+  const bar = document.getElementById("kidbar");
+  if(!bar) return;
+  bar.innerHTML = db.kids.map((k, i) =>
+      '<button type="button" data-kid="' + i + '" aria-pressed="' + (i === db.current) + '">' +
+      esc(kidLabel(k, i)) + '</button>'
+    ).join("") +
+    '<button type="button" class="addkid" data-addkid aria-label="Add a child">+</button>';
+}
+
 function render(){
+  renderKidBar();
   document.getElementById("agechip").textContent = ageLabel();
   document.querySelectorAll("nav button").forEach(b =>
     b.setAttribute("aria-current", String(b.dataset.tab === tab))
@@ -1878,6 +2067,32 @@ document.querySelector("nav").addEventListener("click", e => {
   if(b) go(b.dataset.tab);
 });
 document.getElementById("agechip").addEventListener("click", () => go("setup"));
+
+function addKid(){
+  db.kids.push(blankKid(""));
+  useKid(db.kids.length - 1);
+  lastBulk = null;
+  save();
+}
+
+document.getElementById("kidbar").addEventListener("click", e => {
+  if(e.target.closest("[data-addkid]")){
+    addKid();
+    go("setup");
+    const nameBox = document.getElementById("c-name");
+    if(nameBox) nameBox.focus();
+    return;
+  }
+  const pick = e.target.closest("[data-kid]");
+  if(pick){
+    useKid(Number(pick.dataset.kid));
+    lastBulk = null;
+    assessFilter = "all";
+    save();
+    window.scrollTo(0, 0);
+    render();
+  }
+});
 
 document.querySelector("main").addEventListener("click", e => {
   /* works from the Skills list and the Assess sheet alike, so it runs before
@@ -1907,6 +2122,9 @@ document.querySelector("main").addEventListener("click", e => {
 
   const stFilter = e.target.closest("[data-status-filter]");
   if(stFilter){ fStatus = stFilter.dataset.statusFilter; renderSkills(); return; }
+
+  const ord = e.target.closest("[data-order]");
+  if(ord){ fOrder = ord.dataset.order; renderSkills(); return; }
 
   const grp = e.target.closest("[data-group]");
   if(grp){ fGroup = grp.dataset.group === "1"; renderSkills(); return; }
@@ -2060,7 +2278,7 @@ document.querySelector("main").addEventListener("input", e => {
     save();
     return;
   }
-  if(e.target.id === "c-name"){ db.child.name = e.target.value; save(); return; }
+  if(e.target.id === "c-name"){ db.child.name = e.target.value; save(); renderKidBar(); return; }
   if(e.target.id === "c-bd"){ db.child.birthdate = e.target.value; save(); document.getElementById("agechip").textContent = ageLabel(); return; }
   if(e.target.id === "c-am"){ db.child.ageMonths = e.target.value === "" ? null : Number(e.target.value); save(); document.getElementById("agechip").textContent = ageLabel(); return; }
 });
@@ -2090,6 +2308,22 @@ document.querySelector("main").addEventListener("click", e => {
     return;
   }
 
+  if(e.target.closest("[data-addkid]")){
+    addKid(); render();
+    const nameBox = document.getElementById("c-name");
+    if(nameBox) nameBox.focus();
+    return;
+  }
+  if(e.target.id === "delkid"){
+    const label = kidLabel(db.kids[db.current], db.current);
+    const n = Object.keys(db.rec).length;
+    if(confirm("Remove " + label + " and their " + n + " marked skill" + (n === 1 ? "" : "s") + "? This cannot be undone \u2014 copy a backup first if you might want them back.")){
+      db.kids.splice(db.current, 1);
+      useKid(Math.max(0, db.current - 1));
+      save(); render();
+    }
+    return;
+  }
   if(e.target.id === "copyfixes"){
     copyText(e.target, correctionsText(), "Copy just the corrections");
     return;
@@ -2131,10 +2365,16 @@ document.querySelector("main").addEventListener("click", e => {
       alert("That doesn't look like a backup. Paste the whole thing, starting at the line HELP TRACKER BACKUP.");
       return;
     }
-    const n = Object.keys(parsed.rec).length;
-    if(confirm("Replace everything in the app with this backup? It has " + n + (n === 1 ? " skill" : " skills") + " in it.")){
-      db = parsed; save(); applyFixes(); box.value = ""; render();
+    const names = parsed.kids.map(k => (k.child.name || "").trim() || "an unnamed child");
+    if(!confirm("Bring in " + names.length + (names.length === 1 ? " child" : " children") + " \u2014 " +
+                names.join(", ") + "?\n\nThis adds and updates only. Nothing already in the app is removed.")){
+      return;
     }
+    const r = mergeBackup(parsed);
+    save(); applyFixes(); box.value = ""; render();
+    alert("Done. " + r.added + (r.added === 1 ? " child added, " : " children added, ") +
+          r.updated + " updated, " + r.skills + (r.skills === 1 ? " skill" : " skills") + " brought in" +
+          (r.fixes ? ", " + r.fixes + " corrected" : "") + ".");
   }
 });
 
