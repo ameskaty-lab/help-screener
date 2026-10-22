@@ -112,6 +112,13 @@
   .statusrow button[aria-pressed="true"].mastered{background:var(--mastered-bg);border-color:var(--mastered);color:var(--mastered)}
   .statusrow button[aria-pressed="true"].assess{background:var(--assess-bg);border-color:var(--assess);color:var(--assess)}
   .tag.assess{background:var(--assess-bg);border-color:#bae6fd;color:#075985}
+  .bookbox{background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 12px;margin-top:10px}
+  .bookbox + .bookbox{margin-top:8px}
+  .bookbox span.src{display:block;font-size:11.5px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:#92400e;margin-bottom:5px}
+  .bookbox.summarised{background:var(--bg);border-color:var(--line)}
+  .bookbox.summarised span.src{color:var(--muted)}
+  .bookbox p{margin:0;font-size:13.5px;white-space:pre-wrap;color:var(--ink)}
+
   .planbox{background:var(--assess-bg);border:1px solid #bae6fd;border-radius:10px;padding:10px 12px;margin-top:12px}
   .planbox span.lbl{display:block;font-size:12.5px;font-weight:650;color:#075985;margin-bottom:6px}
   .planbox textarea{min-height:56px}
@@ -226,6 +233,9 @@
     .sheet-item h3{display:inline;font-size:8.8pt;font-weight:600;letter-spacing:-.1px;margin:0;color:#000}
     .sheet-meta{display:inline;font-size:7pt;font-weight:400;color:#777;margin:0 0 0 5px;letter-spacing:0}
     .sheet-plan{font-size:8pt;margin:0;color:#333}
+    .bookbox{background:none;border:0;border-left:1.5pt solid #999;border-radius:0;padding:0 0 0 6px;margin:1px 0 1px 0}
+    .bookbox span.src{font-size:6.5pt;letter-spacing:.3px;color:#555;margin:0}
+    .bookbox p{font-size:7.8pt;color:#000}
 
     .sheet-result{
       font-size:7.6pt;border:0;padding:0;margin:0;color:#555;
@@ -328,8 +338,8 @@ const BASE_ITEMS = [
 {"id":"1.42","a":1,"age":"7-11","lo":7.0,"hi":11.0,"s":"Imitates familiar, then new gesture","h":"46"},
 {"id":"1.43","a":1,"age":"7-9","lo":7.0,"hi":9.0,"s":"Responds to simple requests with gestures","h":"47"},
 {"id":"1.44","a":1,"age":"8-9","lo":8.0,"hi":9.0,"s":"Looks at pictures one minute when named","h":"48"},
-{"id":"1.45","a":1,"age":"?-10","lo":null,"hi":10.0,"s":"Retains two and reaches for third object","h":"44"},
-{"id":"1.46","a":1,"age":"?-11","lo":null,"hi":11.0,"s":"Overcomes obstacle to obtain object","h":"49"},
+{"id":"1.45","a":1,"age":"8-10","lo":8.0,"hi":10.0,"s":"Retains two and reaches for third object","h":"44"},
+{"id":"1.46","a":1,"age":"8-11","lo":8.0,"hi":11.0,"s":"Overcomes obstacle to obtain object","h":"49"},
 {"id":"1.47","a":1,"age":"8-10","lo":8.0,"hi":10.0,"s":"Retrieves object using other material","h":"50"},
 {"id":"1.48","a":1,"age":"8-12","lo":8.0,"hi":12.0,"s":"Listens selectively to familiar words","h":"51"},
 {"id":"1.49","a":1,"age":"9-10","lo":9.0,"hi":10.0,"s":"Finds hidden object under three superimposed screens","h":"52"},
@@ -1039,7 +1049,7 @@ const KEY = "help-tracker-v1";
 /* Several children, each with their own marks. db.child and db.rec are live
    references into whichever one is selected, so every screen keeps reading
    them exactly as it did when there was only one. */
-let db = {kids:[], current:0, fix:{}};
+let db = {kids:[], current:0, fix:{}, book:{hah:{}, guide:{}}};
 
 function blankKid(name){
   return {id:"k" + Date.now().toString(36) + Math.random().toString(36).slice(2,6),
@@ -1096,6 +1106,7 @@ function load(){
         db.current = 0;
       }
       db.fix = p.fix || {};
+      db.book = {hah:(p.book && p.book.hah) || {}, guide:(p.book && p.book.guide) || {}};
     }
   }catch(e){ /* private mode / blocked storage: run with empty data */ }
   useKid(db.current);
@@ -1104,7 +1115,7 @@ let storageBroken = false;
 
 function save(){
   try{
-    localStorage.setItem(KEY, JSON.stringify({kids:db.kids, current:db.current, fix:db.fix}));
+    localStorage.setItem(KEY, JSON.stringify({kids:db.kids, current:db.current, fix:db.fix, book:db.book}));
     storageBroken = false;
   }catch(e){
     /* quota, private browsing, or a browser refusing storage on this page */
@@ -1232,6 +1243,7 @@ function itemRow(it, m){
       '</div>' +
       (st ? '<button type="button" class="btn ghost small" data-status="">Clear mark</button>' : '') +
       (it.f ? '<p class="small muted" style="margin-top:10px"><b>Footnote ' + it.f + ':</b> ' + esc(FOOTNOTES[it.f]) + '</p>' : '') +
+      bookBlocks(it) +
       (st === "assess"
         ? '<div class="planbox">' +
             '<span class="lbl">How will you check this with her?</span>' +
@@ -1252,6 +1264,18 @@ function itemRow(it, m){
 /* Corrections to the book details themselves. The skills here were transcribed
    from photographs, so a page number or age range can be wrong; this is how you
    put it right, for good. */
+function bookBlocks(it){
+  const bk = bookFor(it);
+  let out = "";
+  const box = (entry, bookLabel) =>
+    '<div class="bookbox' + (entry.sum ? " summarised" : "") + '"><span class="src">' +
+    (entry.sum ? "Summary \u2014 not the book\u2019s wording \u00b7 " : "") + esc(bookLabel) +
+    '</span><p>' + esc(entry.t) + '</p></div>';
+  if(bk.guide) out += box(bk.guide, "Activity Guide " + it.id);
+  if(bk.hah)   out += box(bk.hah, hahLabel(it.h));
+  return out;
+}
+
 function fixPanel(it){
   const base = baseItem(it.id) || it;
   const f = (db.fix || {})[it.id] || {};
@@ -1673,6 +1697,7 @@ function renderAssess(){
         '</div>' +
 
         '<div class="noprint"><textarea data-plan placeholder="How you\u2019ll check it \u2014 what you\u2019ll need, what you\u2019ll ask her to do">' + esc(plan) + '</textarea></div>' +
+        bookBlocks(it) +
         '<p class="sheet-plan printonly">' +
           (plan ? esc(plan) : '<span class="sheet-blank"></span>') + '</p>' +
 
@@ -1719,6 +1744,18 @@ function renderSetup(){
       '<details class="foot"><summary>Preview what gets copied</summary><div><pre id="preview" style="white-space:pre-wrap;word-break:break-word;font-size:12px;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:10px;margin:8px 0 0;overflow-x:auto"></pre></div></details>' +
       '<label class="field"><span>Restore &mdash; paste a backup here</span><textarea id="importbox" placeholder="Paste the whole backup, straight from Notes"></textarea></label>' +
       '<button type="button" class="btn ghost wide" id="import">Restore from pasted backup</button>' +
+    '</div>' +
+
+    '<div class="card">' +
+      '<h2>Text from your books</h2>' +
+      '<p class="sub">Optional. Paste in what your own books say and it shows on the skill and on the printed sheet. It is held on this device only \u2014 it is not part of the app \u2014 and it travels inside your backup. You have ' +
+        bookCounts().pages + ' handout page' + (bookCounts().pages === 1 ? "" : "s") + ' and ' +
+        bookCounts().items + ' guide entr' + (bookCounts().items === 1 ? "y" : "ies") + '.</p>' +
+      '<details class="foot"><summary>How to lay it out</summary><div><pre style="white-space:pre-wrap;font-size:12px;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:10px;margin:8px 0 0">--- AT HOME ---\n\nPAGE 35\nWhatever p.35 says, over as\nmany lines as you like.\n\nPAGE 47\n...\n\n--- GUIDE ---\n\nITEM 1.32\nHow the Guide says to check 1.32.</pre>' +
+        '<p class="small muted" style="margin-top:8px">Handouts attach by page number, so one page reaches every skill that cites it. Guide entries attach by item number.</p></div></details>' +
+      '<label class="field"><span>Paste book text</span><textarea id="bookbox" placeholder="Paste it here"></textarea></label>' +
+      '<button type="button" class="btn ghost wide" id="addbook">Add this text</button>' +
+      '<button type="button" class="btn ghost wide" id="copybook">Copy the book text on its own</button>' +
     '</div>' +
 
     '<div class="card">' +
@@ -1837,6 +1874,15 @@ function backupText(){
   lines.push("");
   lines.push("END OF BACKUP (" + db.kids.length + (db.kids.length === 1 ? " child, " : " children, ") +
              total + (total === 1 ? " skill)" : " skills)"));
+
+  /* last, because the book bodies are free text and would otherwise be read
+     as skill or correction lines */
+  const bl = bookLines();
+  if(bl.length){
+    lines.push("");
+    lines.push("--- BOOK TEXT ---");
+    lines.push.apply(lines, bl);
+  }
   return lines.join("\n");
 }
 
@@ -1865,6 +1911,90 @@ function correctionsText(){
           "",
           "--- CORRECTIONS ---",
           ""].concat(fixes.length ? fixes : ["(none yet)"]).join("\n");
+}
+
+/* Text copied out of your own books, kept on this device only. Pasted in as
+   blocks: PAGE <n> for a HELP...at Home handout, ITEM <n.nn> for an Activity
+   Guide entry. Everything after a marker, up to the next one, is its body. */
+function parseBookText(raw){
+  const out = {hah:{}, guide:{}};
+  let mode = null, key = null, buf = [], isSum = false;
+  const flush = () => {
+    if(mode && key){
+      const body = buf.join("\n").trim();
+      if(body) out[mode][key] = {t: body, sum: isSum};
+    }
+    key = null; buf = [];
+  };
+  for(const rawLine of String(raw || "").split(/\r?\n/)){
+    const line = rawLine.replace(/\s+$/, "");
+    const t = line.trim();
+
+    /* a section can declare itself a summary; entries under it are then
+       labelled as such wherever they appear, never as the book's wording */
+    if(/^-{2,}\s*AT HOME(\s+SUMMARY)?\s*-{2,}$/i.test(t)){
+      flush(); mode = "hah"; isSum = /SUMMARY/i.test(t); continue;
+    }
+    if(/^-{2,}\s*(ACTIVITY\s+)?GUIDE(\s+SUMMARY)?\s*-{2,}$/i.test(t)){
+      flush(); mode = "guide"; isSum = /SUMMARY/i.test(t); continue;
+    }
+    if(/^-{2,}\s*BOOK TEXT\s*-{2,}$/i.test(t)){ flush(); mode = mode || "hah"; continue; }
+
+    let m = t.match(/^PAGE\s+([0-9]{1,4})\s*$/i);
+    if(m){ flush(); mode = "hah"; key = m[1]; continue; }
+    m = t.match(/^ITEM\s+(\d+\.\d+)\s*$/i);
+    if(m){ flush(); mode = "guide"; key = m[1]; continue; }
+
+    if(key) buf.push(line);
+  }
+  flush();
+  return out;
+}
+
+/* older saves held a bare string; treat that as not-a-summary */
+function bookEntry(v){
+  if(v == null) return null;
+  return (typeof v === "string") ? {t: v, sum: false} : v;
+}
+
+function bookLines(){
+  const out = [];
+  const emit = (map, marker, keyWord, sortFn) => {
+    const keys = Object.keys(map).sort(sortFn);
+    for(const want of [false, true]){
+      const group = keys.filter(k => !!bookEntry(map[k]).sum === want);
+      if(!group.length) continue;
+      if(out.length) out.push("");
+      out.push("--- " + marker + (want ? " SUMMARY" : "") + " ---");
+      for(const k of group){
+        out.push("");
+        out.push(keyWord + " " + k);
+        out.push(bookEntry(map[k]).t);
+      }
+    }
+  };
+  emit(db.book.hah, "AT HOME", "PAGE", (a, b) => Number(a) - Number(b));
+  emit(db.book.guide, "GUIDE", "ITEM", undefined);
+  return out;
+}
+
+function bookCounts(){
+  return {pages: Object.keys(db.book.hah).length, items: Object.keys(db.book.guide).length};
+}
+
+function bookText(){
+  const c = bookCounts();
+  return ["HELP TRACKER BOOK TEXT",
+          "Copied from your own books. Keep this with your backup.",
+          "Saved: " + today(),
+          c.pages + " handout page" + (c.pages === 1 ? "" : "s") + ", " +
+          c.items + " guide entr" + (c.items === 1 ? "y" : "ies"),
+          ""].concat(bookLines().length ? bookLines() : ["(nothing yet)"]).join("\n");
+}
+
+/* What the books say about one skill, if you have pasted it in. */
+function bookFor(it){
+  return {guide: bookEntry(db.book.guide[it.id]), hah: bookEntry(db.book.hah[String(it.h)])};
 }
 
 /* Reads FIX lines out of either a corrections note or a full backup. */
@@ -1917,7 +2047,10 @@ function parseBackup(raw){
     current = null;
   };
 
-  for(const rawLine of txt.split(/\r?\n/)){
+  const bookAt = txt.search(/^-{2,}\s*BOOK TEXT\s*-{2,}$/mi);
+  const head = bookAt === -1 ? txt : txt.slice(0, bookAt);
+
+  for(const rawLine of head.split(/\r?\n/)){
     const line = rawLine.trim();
 
     let m = line.match(/^===\s*CHILD:\s*(.*?)\s*===$/i);
@@ -1951,9 +2084,11 @@ function parseBackup(raw){
     if(m && current && m[1].trim()){ current.ideas.push(m[1].trim()); continue; }
   }
 
-  const fix = parseCorrections(txt);
+  const fix = parseCorrections(head);
+  const book = bookAt === -1 ? {hah:{}, guide:{}} : parseBookText(txt.slice(bookAt));
   const anyKid = kids.some(k => Object.keys(k.rec).length || k.child.name || k.child.birthdate || k.child.ageMonths != null);
-  return (anyKid || Object.keys(fix).length) ? {kids: kids, fix: fix} : null;
+  const anyBook = Object.keys(book.hah).length || Object.keys(book.guide).length;
+  return (anyKid || Object.keys(fix).length || anyBook) ? {kids: kids, fix: fix, book: book} : null;
 }
 
 /* Adds what is missing and updates what matches, by name. Nothing is removed,
@@ -1992,6 +2127,12 @@ function mergeBackup(parsed){
     db.fix[id] = Object.assign(db.fix[id] || {}, parsed.fix[id]);
     fixes++;
   }
+
+  let pages = 0;
+  const inBook = parsed.book || {hah:{}, guide:{}};
+  db.book = db.book || {hah:{}, guide:{}};
+  for(const k of Object.keys(inBook.hah || {})){ db.book.hah[k] = inBook.hah[k]; pages++; }
+  for(const k of Object.keys(inBook.guide || {})){ db.book.guide[k] = inBook.guide[k]; pages++; }
   /* a fresh install has one empty child sitting there; once real ones arrive
      it is just clutter, so drop it - but only if it was never touched */
   if(db.kids.length > 1){
@@ -2002,7 +2143,7 @@ function mergeBackup(parsed){
   /* land on what was just brought in, not on whatever was selected before */
   const idx = landOn ? db.kids.indexOf(landOn) : db.current;
   useKid(idx === -1 ? 0 : idx);
-  return {added: added, updated: updated, skills: skills, fixes: fixes};
+  return {added: added, updated: updated, skills: skills, fixes: fixes, pages: pages};
 }
 
 /* navigator.clipboard needs a secure context, which a page opened straight
@@ -2324,6 +2465,25 @@ document.querySelector("main").addEventListener("click", e => {
     }
     return;
   }
+  if(e.target.id === "addbook"){
+    const box = document.getElementById("bookbox");
+    const inc = parseBookText(box.value);
+    const n = Object.keys(inc.hah).length + Object.keys(inc.guide).length;
+    if(!n){
+      alert("No book text found. Each block starts with a line like PAGE 35 or ITEM 1.32.");
+      return;
+    }
+    db.book = db.book || {hah:{}, guide:{}};
+    for(const k of Object.keys(inc.hah)) db.book.hah[k] = inc.hah[k];
+    for(const k of Object.keys(inc.guide)) db.book.guide[k] = inc.guide[k];
+    save(); box.value = ""; render();
+    alert("Added " + n + " block" + (n === 1 ? "" : "s") + ". It shows on any skill it belongs to.");
+    return;
+  }
+  if(e.target.id === "copybook"){
+    copyText(e.target, bookText(), "Copy the book text on its own");
+    return;
+  }
   if(e.target.id === "copyfixes"){
     copyText(e.target, correctionsText(), "Copy just the corrections");
     return;
@@ -2374,7 +2534,8 @@ document.querySelector("main").addEventListener("click", e => {
     save(); applyFixes(); box.value = ""; render();
     alert("Done. " + r.added + (r.added === 1 ? " child added, " : " children added, ") +
           r.updated + " updated, " + r.skills + (r.skills === 1 ? " skill" : " skills") + " brought in" +
-          (r.fixes ? ", " + r.fixes + " corrected" : "") + ".");
+          (r.fixes ? ", " + r.fixes + " corrected" : "") +
+          (r.pages ? ", " + r.pages + " book entries" : "") + ".");
   }
 });
 
